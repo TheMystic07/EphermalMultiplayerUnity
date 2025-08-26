@@ -13,6 +13,7 @@ public class NewUI : MonoBehaviour
     [Header("References")]
     [SerializeField] private NewBombermanClient m_Client;
     [SerializeField] private TextMeshProUGUI m_StatusText;
+    [SerializeField] private GamePlayersController m_PlayersController;
 
     [Header("Buttons - Setup")] 
     [SerializeField] private Button m_CreateWalletButton;
@@ -21,6 +22,8 @@ public class NewUI : MonoBehaviour
     [SerializeField] private Button m_UndelegateButton;
     [SerializeField] private Button m_InitGameButton;
     [SerializeField] private Button m_JoinGameButton;
+    [SerializeField] private Button m_LogPdasButton;
+    [SerializeField] private Button m_FetchPdaDataButton;
 
     [Header("Buttons - Moves (chain)")]
     [SerializeField] private Button m_MoveUpButton;
@@ -53,6 +56,8 @@ public class NewUI : MonoBehaviour
         if (m_UndelegateButton != null) m_UndelegateButton.onClick.AddListener(Undelegate);
         if (m_InitGameButton != null) m_InitGameButton.onClick.AddListener(InitializeGame);
         if (m_JoinGameButton != null) m_JoinGameButton.onClick.AddListener(JoinGame);
+        if (m_LogPdasButton != null) m_LogPdasButton.onClick.AddListener(LogPdas);
+        if (m_FetchPdaDataButton != null) m_FetchPdaDataButton.onClick.AddListener(FetchPdaData);
 
         if (m_MoveUpButton != null) m_MoveUpButton.onClick.AddListener(() => MoveChain(0, 1));
         if (m_MoveDownButton != null) m_MoveDownButton.onClick.AddListener(() => MoveChain(0, -1));
@@ -77,6 +82,8 @@ public class NewUI : MonoBehaviour
         if (m_UndelegateButton != null) m_UndelegateButton.onClick.RemoveAllListeners();
         if (m_InitGameButton != null) m_InitGameButton.onClick.RemoveAllListeners();
         if (m_JoinGameButton != null) m_JoinGameButton.onClick.RemoveAllListeners();
+        if (m_LogPdasButton != null) m_LogPdasButton.onClick.RemoveAllListeners();
+        if (m_FetchPdaDataButton != null) m_FetchPdaDataButton.onClick.RemoveAllListeners();
         if (m_RollupUpButton != null) m_RollupUpButton.onClick.RemoveAllListeners();
         if (m_RollupDownButton != null) m_RollupDownButton.onClick.RemoveAllListeners();
         if (m_RollupLeftButton != null) m_RollupLeftButton.onClick.RemoveAllListeners();
@@ -127,11 +134,78 @@ public class NewUI : MonoBehaviour
             // Refresh PDAs
             m_GamePda = NewBombermanClient.DeriveGamePda(m_Wallet.PublicKey);
             m_PlayerPda = NewBombermanClient.DerivePlayerStatePda(m_Wallet.PublicKey);
+
+            if (res.WasSuccessful && m_PlayersController != null)
+            {
+                m_PlayersController.Initialize(m_GamePda, m_PlayerPda);
+            }
         }
         catch (Exception ex)
         {
             Debug.LogException(ex);
             SetStatus($"Join error: {ex.Message}");
+        }
+    }
+
+    public void LogPdas()
+    {
+        if (m_Wallet == null)
+        {
+            SetStatus("No wallet. Create one first.");
+            return;
+        }
+        m_GamePda = NewBombermanClient.DeriveGamePda(m_Wallet.PublicKey);
+        m_PlayerPda = NewBombermanClient.DerivePlayerStatePda(m_Wallet.PublicKey);
+        Debug.Log($"Wallet: {m_Wallet.PublicKey}");
+        Debug.Log($"Game PDA: {m_GamePda}");
+        Debug.Log($"Player PDA: {m_PlayerPda}");
+        SetStatus("PDAs logged to Console.");
+    }
+
+    public async void FetchPdaData()
+    {
+        try
+        {
+            if (!Precheck()) return;
+            // Fetch game by PDA via RPC (account info raw)
+            // Prefer program fetchers over raw account-info
+            var gameOnChain = await m_Client.FetchGameOnChainByPda(m_GamePda, Commitment.Processed);
+            var playerOnChain = await m_Client.FetchPlayerOnChainByPda(m_PlayerPda, Commitment.Processed);
+            var playerOnRollup = await m_Client.FetchPlayerOnRollupByPda(m_PlayerPda, Commitment.Processed);
+
+            Debug.Log($"Game (chain) null? {gameOnChain == null}");
+            if (gameOnChain != null)
+            {
+                Debug.Log($"Game gridSize={gameOnChain.GridSize} playerCount={gameOnChain.PlayerCount} state={gameOnChain.GameState}");
+            }
+            Debug.Log($"Player (chain) null? {playerOnChain == null}");
+            if (playerOnChain != null)
+            {
+                Debug.Log($"[Chain] Player pos=({playerOnChain.X},{playerOnChain.Y}) alive={playerOnChain.IsAlive} idx={playerOnChain.PlayerIndex}");
+            }
+            Debug.Log($"Player (rollup) null? {playerOnRollup == null}");
+            if (playerOnRollup != null)
+            {
+                Debug.Log($"[Rollup] Player pos=({playerOnRollup.X},{playerOnRollup.Y}) alive={playerOnRollup.IsAlive} idx={playerOnRollup.PlayerIndex}");
+            }
+
+            // Fetch player state on rollup first (if available), else chain
+            var psRollup = await m_Client.GetPlayerStateOnRollup(m_PlayerPda, Commitment.Processed);
+            var psChain = await m_Client.GetPlayerState(m_PlayerPda, Commitment.Processed);
+            if (psRollup != null)
+            {
+                Debug.Log($"[Rollup] Player ({psRollup.Player}) pos=({psRollup.X},{psRollup.Y}) alive={psRollup.IsAlive} idx={psRollup.PlayerIndex}");
+            }
+            if (psChain != null)
+            {
+                Debug.Log($"[Chain] Player ({psChain.Player}) pos=({psChain.X},{psChain.Y}) alive={psChain.IsAlive} idx={psChain.PlayerIndex}");
+            }
+            SetStatus("Fetched PDA data. See Console.");
+        }
+        catch (Exception ex)
+        {
+            Debug.LogException(ex);
+            SetStatus($"Fetch PDA data failed: {ex.Message}");
         }
     }
     public async void Delegate()
@@ -199,7 +273,12 @@ public class NewUI : MonoBehaviour
         {
             if (!Precheck()) return;
             var state = await m_Client.GetPlayerState(m_PlayerPda, Commitment.Processed);
-            if (state == null) { SetStatus("Player not found. Ensure first"); return; }
+            if (state == null)
+            {
+                await m_Client.EnsureGameAndPlayer(m_Wallet.PublicKey, m_Wallet.PublicKey);
+                state = await m_Client.GetPlayerState(m_PlayerPda, Commitment.Processed);
+                if (state == null) { SetStatus("Player still not found after ensure."); return; }
+            }
             int targetX = Mathf.Clamp(state.X + dx, 0, Mathf.Max(0, m_GridSize - 1));
             int targetY = Mathf.Clamp(state.Y + dy, 0, Mathf.Max(0, m_GridSize - 1));
             // Manhattan distance guard (<=1)
@@ -225,7 +304,20 @@ public class NewUI : MonoBehaviour
         {
             if (!Precheck()) return;
             var state = await m_Client.GetPlayerStateOnRollup(m_PlayerPda, Commitment.Processed);
-            if (state == null) { SetStatus("Player not found. Ensure first"); return; }
+            if (state == null)
+            {
+                // Fallback to chain: if present there, user likely needs to delegate
+                var chainState = await m_Client.GetPlayerState(m_PlayerPda, Commitment.Processed);
+                if (chainState != null)
+                {
+                    SetStatus("Player not on rollup. Delegate first.");
+                    return;
+                }
+                // Otherwise, ensure then retry once
+                await m_Client.EnsureGameAndPlayer(m_Wallet.PublicKey, m_Wallet.PublicKey);
+                state = await m_Client.GetPlayerStateOnRollup(m_PlayerPda, Commitment.Processed);
+                if (state == null) { SetStatus("Player not found after ensure (rollup)."); return; }
+            }
             int targetX = Mathf.Clamp(state.X + dx, 0, Mathf.Max(0, m_GridSize - 1));
             int targetY = Mathf.Clamp(state.Y + dy, 0, Mathf.Max(0, m_GridSize - 1));
             // Manhattan distance guard (<=1)

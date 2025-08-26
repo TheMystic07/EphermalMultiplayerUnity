@@ -68,7 +68,12 @@ public class NewBombermanClient : MonoBehaviour
 
         var ix = BombermanProgramProgram.DelegatePlayer(accounts);
         tx.Add(ix);
-        return await SignAndSend(tx, m_ActiveRpcClient);
+        var res = await SignAndSend(tx, m_ActiveRpcClient);
+        if (res.WasSuccessful)
+        {
+            Debug.Log($"[Bomberman] Delegate tx: {res.Result}");
+        }
+        return res;
     }
 
     public async Task<RequestResult<string>> UndelegatePlayer(PublicKey _playerState)
@@ -83,7 +88,12 @@ public class NewBombermanClient : MonoBehaviour
 
         var ix = BombermanProgramProgram.UndelegatePlayer(accounts);
         tx.Add(ix);
-        return await SignAndSend(tx, m_MagicRpcClient);
+        var res = await SignAndSend(tx, m_MagicRpcClient);
+        if (res.WasSuccessful)
+        {
+            Debug.Log($"[Bomberman] Undelegate tx: {res.Result}");
+        }
+        return res;
     }
 
     public async Task<bool> IsPlayerDelegated(PublicKey _playerState)
@@ -204,6 +214,117 @@ public class NewBombermanClient : MonoBehaviour
             return null;
         }
     }
+
+    // Anchor-style: program.account.game.fetch(gamePda) on chain
+    public async Task<Game> FetchGameOnChainByPda(PublicKey _gamePda, Commitment _commitment = Commitment.Processed)
+    {
+        if (_gamePda == null || string.IsNullOrEmpty(_gamePda.Key)) return null;
+        try
+        {
+            var res = await m_ProgramClient.GetGameAsync(_gamePda.ToString(), _commitment);
+            return res.WasSuccessful ? res.ParsedResult : null;
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning($"FetchGameOnChainByPda error: {ex.Message}");
+            return null;
+        }
+    }
+
+    // Anchor-style: program.account.playerState.fetch(playerPda) on chain
+    public async Task<PlayerState> FetchPlayerOnChainByPda(PublicKey _playerStatePda, Commitment _commitment = Commitment.Processed)
+    {
+        if (_playerStatePda == null || string.IsNullOrEmpty(_playerStatePda.Key)) return null;
+        try
+        {
+            var res = await m_ProgramClient.GetPlayerStateAsync(_playerStatePda.ToString(), _commitment);
+            return res.WasSuccessful ? res.ParsedResult : null;
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning($"FetchPlayerOnChainByPda error: {ex.Message}");
+            return null;
+        }
+    }
+
+    // Anchor-style: ephemeralProgram.account.playerState.fetch(playerPda) on rollup
+    public async Task<PlayerState> FetchPlayerOnRollupByPda(PublicKey _playerStatePda, Commitment _commitment = Commitment.Processed)
+    {
+        if (_playerStatePda == null || string.IsNullOrEmpty(_playerStatePda.Key)) return null;
+        try
+        {
+            var res = await m_ProgramClientMagic.GetPlayerStateAsync(_playerStatePda.ToString(), _commitment);
+            return res.WasSuccessful ? res.ParsedResult : null;
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning($"FetchPlayerOnRollupByPda error: {ex.Message}");
+            return null;
+        }
+    }
+
+    public async Task<IReadOnlyList<PlayerState>> GetPlayersForGame(PublicKey _gamePda, bool _useRollup = false, Commitment _commitment = Commitment.Processed)
+    {
+        try
+        {
+            var programClient = _useRollup ? m_ProgramClientMagic : m_ProgramClient;
+            var res = await programClient.GetPlayerStatesAsync(BombermanProgramProgram.ID, _commitment);
+            if (res.WasSuccessful && res.ParsedResult != null)
+            {
+                var list = new List<PlayerState>();
+                foreach (var ps in res.ParsedResult)
+                {
+                    if (ps.Game != null && _gamePda != null && ps.Game.Equals(_gamePda))
+                    {
+                        list.Add(ps);
+                    }
+                }
+                return list;
+            }
+            return Array.Empty<PlayerState>();
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning($"GetPlayersForGame error (useRollup={_useRollup}): {ex.Message}");
+            // Fallback: try the other source once
+            try
+            {
+                var res2 = await (_useRollup ? m_ProgramClient : m_ProgramClientMagic).GetPlayerStatesAsync(BombermanProgramProgram.ID, _commitment);
+                if (res2.WasSuccessful && res2.ParsedResult != null)
+                {
+                    var list2 = new List<PlayerState>();
+                    foreach (var ps in res2.ParsedResult)
+                    {
+                        if (ps.Game != null && _gamePda != null && ps.Game.Equals(_gamePda))
+                        {
+                            list2.Add(ps);
+                        }
+                    }
+                    return list2;
+                }
+            }
+            catch (Exception ex2)
+            {
+                Debug.LogWarning($"GetPlayersForGame secondary error: {ex2.Message}");
+            }
+            return Array.Empty<PlayerState>();
+        }
+    }
+
+    public async Task<bool> AccountExists(PublicKey _account, bool _useRollup = false, Commitment _commitment = Commitment.Processed)
+    {
+        if (_account == null || string.IsNullOrEmpty(_account.Key)) return false;
+        try
+        {
+            var client = _useRollup ? m_MagicRpcClient : m_DefaultRpcClient;
+            var info = await client.GetAccountInfoAsync(_account, _commitment);
+            return info.WasSuccessful && info.Result?.Value != null;
+        }
+        catch
+        {
+            return false;
+        }
+    }
     #endregion
 
     #region Ensure Helpers
@@ -261,7 +382,12 @@ public class NewBombermanClient : MonoBehaviour
             var initTx = await BuildBaseTransaction(m_ActiveRpcClient);
             var initAccounts = new InitializeGameAccounts { Game = gamePda, Authority = _authority, SystemProgram = SystemProgram.ProgramIdKey };
             initTx.Add(BombermanProgramProgram.InitializeGame(initAccounts));
-            return await SignAndSend(initTx, m_ActiveRpcClient);
+            var res = await SignAndSend(initTx, m_ActiveRpcClient);
+            if (res.WasSuccessful)
+            {
+                Debug.Log($"[Bomberman] InitializeGame tx: {res.Result}");
+            }
+            return res;
         }
         catch (Exception ex)
         {
@@ -297,7 +423,12 @@ public class NewBombermanClient : MonoBehaviour
             var joinTx = await BuildBaseTransaction(m_ActiveRpcClient);
             var joinAccounts = new JoinGameAccounts { Game = gamePda, PlayerState = playerPda, Player = _player, SystemProgram = SystemProgram.ProgramIdKey };
             joinTx.Add(BombermanProgramProgram.JoinGame(joinAccounts, _authority));
-            return await SignAndSend(joinTx, m_ActiveRpcClient);
+            var res = await SignAndSend(joinTx, m_ActiveRpcClient);
+            if (res.WasSuccessful)
+            {
+                Debug.Log($"[Bomberman] JoinGame tx: {res.Result}");
+            }
+            return res;
         }
         catch (Exception ex)
         {
@@ -450,16 +581,24 @@ public class NewBombermanClient : MonoBehaviour
         try
         {
             _tx.Sign(m_Wallet);
-            var result = await _client.SendTransactionAsync(_tx.Serialize(), skipPreflight: true, commitment: Commitment.Confirmed);
-            if (result.WasSuccessful)
+            var sigResult = await _client.SendTransactionAsync(_tx.Serialize(), skipPreflight: true, commitment: Commitment.Processed);
+            if (!sigResult.WasSuccessful)
             {
-                await _client.ConfirmTransaction(result.Result, Commitment.Confirmed);
+                Debug.LogError($"Transaction failed: {sigResult.Reason}");
+                return sigResult;
             }
-            else
+
+            // Confirm in background with lower commitment for speed
+            _ = Task.Run(async () =>
             {
-                Debug.LogError($"Transaction failed: {result.Reason}");
-            }
-            return result;
+                try
+                {
+                    await _client.ConfirmTransaction(sigResult.Result, Commitment.Processed);
+                }
+                catch { /* ignore background confirm errors */ }
+            });
+
+            return sigResult;
         }
         catch (Exception ex)
         {
@@ -473,16 +612,24 @@ public class NewBombermanClient : MonoBehaviour
         try
         {
             _tx.Sign(_signer);
-            var result = await _client.SendTransactionAsync(_tx.Serialize(), skipPreflight: true, commitment: Commitment.Confirmed);
-            if (result.WasSuccessful)
+            var sigResult = await _client.SendTransactionAsync(_tx.Serialize(), skipPreflight: true, commitment: Commitment.Processed);
+            if (!sigResult.WasSuccessful)
             {
-                await _client.ConfirmTransaction(result.Result, Commitment.Confirmed);
+                Debug.LogError($"Transaction failed: {sigResult.Reason}");
+                return sigResult;
             }
-            else
+
+            // Confirm in background quickly
+            _ = Task.Run(async () =>
             {
-                Debug.LogError($"Transaction failed: {result.Reason}");
-            }
-            return result;
+                try
+                {
+                    await _client.ConfirmTransaction(sigResult.Result, Commitment.Processed);
+                }
+                catch { }
+            });
+
+            return sigResult;
         }
         catch (Exception ex)
         {
