@@ -167,6 +167,7 @@ public class NewUI : MonoBehaviour
         try
         {
             if (!Precheck()) return;
+            await m_Client.DebugDumpPdas(m_Wallet.PublicKey, m_Wallet.PublicKey, true);
             // Fetch game by PDA via RPC (account info raw)
             // Prefer program fetchers over raw account-info
             var gameOnChain = await m_Client.FetchGameOnChainByPda(m_GamePda, Commitment.Processed);

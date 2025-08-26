@@ -325,6 +325,61 @@ public class NewBombermanClient : MonoBehaviour
             return false;
         }
     }
+
+    // Verbose diagnostics to help trace PDA fetching issues (chain vs rollup)
+    public async Task DebugDumpPdas(PublicKey _authority, PublicKey _player, bool _useRollup)
+    {
+        try
+        {
+            var gamePda = DeriveGamePda(_authority);
+            var playerPda = DerivePlayerStatePda(_player);
+            Debug.Log($"[Diag] RPCs: chain={m_RpcUrl} | rollup={m_MagicBlockRpcUrl}");
+            Debug.Log($"[Diag] Authority={_authority} Player={_player}");
+            Debug.Log($"[Diag] GamePDA={gamePda} PlayerPDA={playerPda}");
+
+            // Chain account-info
+            var chainInfoGame = await m_DefaultRpcClient.GetAccountInfoAsync(gamePda, Commitment.Processed);
+            var chainInfoPlayer = await m_DefaultRpcClient.GetAccountInfoAsync(playerPda, Commitment.Processed);
+            Debug.Log($"[Diag][Chain] game exists={chainInfoGame.WasSuccessful && chainInfoGame.Result?.Value!=null} owner={(chainInfoGame.Result?.Value?.Owner ?? "<none>")} dataLen={(chainInfoGame.Result?.Value?.Data!=null? string.Join(',', chainInfoGame.Result.Value.Data).Length:0)}");
+            Debug.Log($"[Diag][Chain] player exists={chainInfoPlayer.WasSuccessful && chainInfoPlayer.Result?.Value!=null} owner={(chainInfoPlayer.Result?.Value?.Owner ?? "<none>")} dataLen={(chainInfoPlayer.Result?.Value?.Data!=null? string.Join(',', chainInfoPlayer.Result.Value.Data).Length:0)}");
+
+            // Rollup account-info
+            var rollInfoGame = await m_MagicRpcClient.GetAccountInfoAsync(gamePda, Commitment.Processed);
+            var rollInfoPlayer = await m_MagicRpcClient.GetAccountInfoAsync(playerPda, Commitment.Processed);
+            Debug.Log($"[Diag][Rollup] game exists={rollInfoGame.WasSuccessful && rollInfoGame.Result?.Value!=null} owner={(rollInfoGame.Result?.Value?.Owner ?? "<none>")} dataLen={(rollInfoGame.Result?.Value?.Data!=null? string.Join(',', rollInfoGame.Result.Value.Data).Length:0)}");
+            Debug.Log($"[Diag][Rollup] player exists={rollInfoPlayer.WasSuccessful && rollInfoPlayer.Result?.Value!=null} owner={(rollInfoPlayer.Result?.Value?.Owner ?? "<none>")} dataLen={(rollInfoPlayer.Result?.Value?.Data!=null? string.Join(',', rollInfoPlayer.Result.Value.Data).Length:0)}");
+
+            // Program fetch (parsed)
+            var gameParsed = await FetchGameOnChainByPda(gamePda, Commitment.Processed);
+            var playerParsedChain = await FetchPlayerOnChainByPda(playerPda, Commitment.Processed);
+            var playerParsedRoll = await FetchPlayerOnRollupByPda(playerPda, Commitment.Processed);
+            if (gameParsed != null)
+            {
+                Debug.Log($"[Diag][ChainParsed] game grid={gameParsed.GridSize} players={gameParsed.PlayerCount} state={gameParsed.GameState}");
+            }
+            else Debug.Log("[Diag][ChainParsed] game null");
+
+            if (playerParsedChain != null)
+            {
+                Debug.Log($"[Diag][ChainParsed] player ({playerParsedChain.Player}) pos=({playerParsedChain.X},{playerParsedChain.Y}) alive={playerParsedChain.IsAlive} idx={playerParsedChain.PlayerIndex}");
+            }
+            else Debug.Log("[Diag][ChainParsed] player null");
+
+            if (playerParsedRoll != null)
+            {
+                Debug.Log($"[Diag][RollupParsed] player ({playerParsedRoll.Player}) pos=({playerParsedRoll.X},{playerParsedRoll.Y}) alive={playerParsedRoll.IsAlive} idx={playerParsedRoll.PlayerIndex}");
+            }
+            else Debug.Log("[Diag][RollupParsed] player null");
+
+            // Delegation check (owner should be s_DelegationProgram when delegated)
+            bool delegated = rollInfoPlayer.Result?.Value?.Owner != null && rollInfoPlayer.Result.Value.Owner.Equals(s_DelegationProgram);
+            Debug.Log($"[Diag] delegatedOnRollup={delegated}");
+        }
+        catch (Exception ex)
+        {
+            Debug.LogWarning($"[Diag] DebugDumpPdas error: {ex.Message}");
+        }
+    }
     #endregion
 
     #region Ensure Helpers
